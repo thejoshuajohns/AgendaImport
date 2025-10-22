@@ -4,6 +4,7 @@ import sys
 import xlrd
 from db_table import db_table
 import os
+from datetime import datetime
 
 # database schemas
 SESSIONS_SCHEMA = {
@@ -11,11 +12,11 @@ SESSIONS_SCHEMA = {
     "data": "text",
     "time_start": "text",
     "time_end": "text",
-    "session_type": "text", # this can either be 'Session' or 'Sub-session'
+    "session_type": "text",  # 'Session' or 'Sub-session'
     "title": "text",
     "location": "text",
     "description": "text",
-    "parent_id": "integer" # a foreign key that connects sub-sessions to their parent session
+    "parent_id": "integer"  # foreign key connecting sub-sessions to parent
 }
 
 SPEAKERS_SCHEMA = {
@@ -23,7 +24,6 @@ SPEAKERS_SCHEMA = {
     "name": "text NOT NULL UNIQUE"
 }
 
-# this table connects sessions to speakers (many-to-many relationship)
 SESSION_SPEAKERS_SCHEMA = {
     "session_id": "integer",
     "speaker_id": "integer"
@@ -35,7 +35,6 @@ def import_agenda(filename):
     speakers_table = db_table("speakers", SPEAKERS_SCHEMA)
     session_speakers_table = db_table("session_speakers", SESSION_SPEAKERS_SCHEMA)
 
-    # try to open the Excel file and catch main errors
     try:
         workbook = xlrd.open_workbook(filename)
         sheet = workbook.sheet_by_index(0)
@@ -45,11 +44,10 @@ def import_agenda(filename):
     except xlrd.XLRDError:
         print(f"Error: Unable to read the Excel file '{filename}'.")
         return
-    
+
     last_session_id = None
 
-    # idx 14 is where the agenda starts
-    for i in range(14, sheet.nrows):
+    for i in range(15, sheet.nrows):  # assume agenda starts at row 15
         row = sheet.row_values(i)
         date, time_start, time_end, session_type, title, location, description, speakers = row
         if not any(row):
@@ -66,45 +64,50 @@ def import_agenda(filename):
             "parent_id": None
         }
 
-        # sanitize inputs to prevent SQL injection
-        sanitized_data = {
-                    k: v.replace("'", "''") if isinstance(v, str) else v
-                    for k, v in session_data.items()
-        }
+        # convert to ISO datetime
+        if date and time_start:
+            dt_start = datetime.strptime(f"{date} {time_start}", "%m/%d/%Y %I:%M %p")
+            session_data["time_start"] = dt_start.isoformat()
+        if date and time_end:
+            dt_end = datetime.strptime(f"{date} {time_end}", "%m/%d/%Y %I:%M %p")
+            session_data["time_end"] = dt_end.isoformat()
 
-        # handle sessions and sub-sessions
-        current_session_id = None
+        # sanitize
+        sanitized_data = {k: (v.replace("'", "''") if isinstance(v, str) else v) for k, v in session_data.items()}
+
+        # determine parent/child relationship
         if session_type == "Session":
             sanitized_data["parent_id"] = None
             current_session_id = sessions_table.insert(sanitized_data)
             last_session_id = current_session_id
-        elif session_type == "Sub-session":
+        elif session_type == "Sub":
             if last_session_id is None:
-                print(f"Error: Sub-session '{title}' found without a parent session.")
+                print(f"Warning: Sub-session '{title}' found without a parent session. Skipping.")
                 continue
             sanitized_data["parent_id"] = last_session_id
             current_session_id = sessions_table.insert(sanitized_data)
+        else:
+            # fallback for unrecognized session_type
+            sanitized_data["parent_id"] = None
+            current_session_id = sessions_table.insert(sanitized_data)
+            last_session_id = current_session_id
 
         # handle speakers
         if current_session_id and speakers:
-            speakers = [s.strip() for s in speakers.replace(';', ",").split(",") if s.strip()]
-            for speaker_name in speakers:
-                existing_speaker = speakers_table.select(["id"], {"name": speaker_name})
+            speaker_list = [s.strip() for s in speakers.replace(";", ",").split(",") if s.strip()]
+            for speaker_name in speaker_list:
+                sanitized_name = speaker_name.replace("'", "''")
+                existing_speaker = speakers_table.select(["id"], {"name": sanitized_name})
                 if existing_speaker:
                     speaker_id = existing_speaker[0]["id"]
                 else:
-                    sanitized_name = speaker_name.replace("'", "''")
                     speaker_id = speakers_table.insert({"name": sanitized_name})
-
                 session_speakers_table.insert({"session_id": current_session_id, "speaker_id": speaker_id})
 
-    # close database connections
     sessions_table.close()
     speakers_table.close()
     session_speakers_table.close()
     print("Agenda import completed successfully.")
-
-
 
 
 if __name__ == "__main__":
@@ -113,7 +116,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     agenda_file = sys.argv[1]
-    
     if os.path.exists(db_table.DB_NAME):
         os.remove(db_table.DB_NAME)
         print(f"Removed existing database: {db_table.DB_NAME}")

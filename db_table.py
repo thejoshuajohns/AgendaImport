@@ -71,33 +71,33 @@ class db_table:
     #         table.select()
     #         table.select(where={ "name": "John" })
     #
-    def select(self, columns = [], where = {}):
-        # by default, query all columns
-        if not columns:
-            columns = [ k for k in self.schema ]
+    def select(self, columns=None, where=None):
+        if columns is None:
+            columns = list(self.schema.keys())
+        if where is None:
+            where = {}
 
-        # build query string
         columns_query_string = ", ".join(columns)
-        query                = "SELECT %s FROM %s" % (columns_query_string, self.name)
-        # build where query string
-        if where:
-            where_query_string = [ "%s = '%s'" % (k,v) for k,v in where.items() ]
-            query             += " WHERE " + ' AND '.join(where_query_string)
+        query = f"SELECT {columns_query_string} FROM {self.name}"
         
-        result = []
-        # SELECT id, name FROM users [ WHERE id=42 AND name=John ]
-        #
-        # Note that columns are formatted into the string without using sqlite safe substitution mechanism
-        # The reason is that sqlite does not provide substitution mechanism for columns parameters
-        # In the context of this project, this is fine (no risk of user malicious input)
-        for row in self.db_conn.execute(query):
-            result_row = {}
-            # convert from (val1, val2, val3) to { col1: val1, col2: val2, col3: val3 }
-            for i in range(0, len(columns)):
-                result_row[columns[i]] = row[i]
-            result.append(result_row)
+        values = []
+        if where:
+            # Use placeholders to avoid data type errors and SQL injection
+            where_query_string = " AND ".join([f"{k} = ?" for k in where.keys()])
+            query += f" WHERE {where_query_string}"
+            values = tuple(where.values())
 
-        return result
+        cursor = self.db_conn.cursor()
+        cursor.execute(query, values)
+        
+        results = []
+        rows = cursor.fetchall()
+        cursor.close()
+        
+        for row in rows:
+            results.append(dict(zip(columns, row)))
+            
+        return results
 
     #
     # INSERT INTO wrapper
@@ -110,18 +110,23 @@ class db_table:
     # Example table.insert({ "id": "42", "name": "John" })
     #
     def insert(self, item):
-        # build columns & values queries
-        columns_query = ", ".join(item.keys())
-        values_query  = ", ".join([ "'%s'" % v for v in item.values()])
-        
-        # Note that columns are formatted into the string without using sqlite safe substitution mechanism
-        # The reason is that sqlite does not provide substitution mechanism for columns parameters
-        # In the context of this project, this is fine (no risk of user malicious input)
-        cursor = self.db_conn.cursor()
-        cursor.execute("INSERT INTO %s (%s) VALUES (%s)" % (self.name, columns_query, values_query))
-        cursor.close()
-        self.db_conn.commit()
-        return cursor.lastrowid
+            columns = item.keys()
+            values = tuple(item.values())
+
+            columns_query = ", ".join(columns)
+            placeholders = ", ".join(["?"] * len(values))
+            
+            query = f"INSERT INTO {self.name} ({columns_query}) VALUES ({placeholders})"
+
+            cursor = self.db_conn.cursor()
+            
+            # The driver will correctly handle integers, strings, and None
+            cursor.execute(query, values)
+            
+            last_id = cursor.lastrowid
+            self.db_conn.commit()
+            cursor.close()
+            return last_id
 
     #
     # UPDATE wrapper
@@ -135,20 +140,21 @@ class db_table:
     # Example table.update({ "name": "Simon" }, { "id": 42 })
     #
     def update(self, values, where):
-        # build set & where queries
-        set_query   = ", ".join(["%s = '%s'" % (k,v) for k,v in values.items()])
-        where_query = " AND ".join(["%s = '%s'" % (k,v) for k,v in where.items()])
-
-        # UPDATE users SET name = Simon WHERE id = 42
-        #
-        # Note that columns are formatted into the string without using sqlite safe substitution mechanism
-        # The reason is that sqlite does not provide substitution mechanism for columns parameters
-        # In the context of this project, this is fine (no risk of user malicious input)
+        set_placeholders = ", ".join([f"{k} = ?" for k in values.keys()])
+        where_placeholders = " AND ".join([f"{k} = ?" for k in where.keys()])
+        
+        # Combine values for SET and WHERE clauses in the correct order
+        params = tuple(values.values()) + tuple(where.values())
+        
+        query = f"UPDATE {self.name} SET {set_placeholders} WHERE {where_placeholders}"
+        
         cursor = self.db_conn.cursor()
-        cursor.execute("UPDATE %s SET %s WHERE %s" % (self.name, set_query, where_query))
-        cursor.close()
+        cursor.execute(query, params)
+        
+        row_count = cursor.rowcount
         self.db_conn.commit()
-        return cursor.rowcount
+        cursor.close()
+        return row_count
 
     #
     # Close the database connection
