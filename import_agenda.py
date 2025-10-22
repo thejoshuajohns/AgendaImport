@@ -72,36 +72,32 @@ def import_agenda(filename):
             dt_end = datetime.strptime(f"{date} {time_end}", "%m/%d/%Y %I:%M %p")
             session_data["time_end"] = dt_end.isoformat()
 
-        # sanitize
-        sanitized_data = {k: (v.replace("'", "''") if isinstance(v, str) else v) for k, v in session_data.items()}
-
         # determine parent/child relationship
         if session_type == "Session":
-            sanitized_data["parent_id"] = None
-            current_session_id = sessions_table.insert(sanitized_data)
+            session_data["parent_id"] = None
+            current_session_id = sessions_table.insert(session_data)
             last_session_id = current_session_id
         elif session_type == "Sub":
             if last_session_id is None:
                 print(f"Warning: Sub-session '{title}' found without a parent session. Skipping.")
                 continue
-            sanitized_data["parent_id"] = last_session_id
-            current_session_id = sessions_table.insert(sanitized_data)
+            session_data["parent_id"] = last_session_id
+            current_session_id = sessions_table.insert(session_data)
         else:
             # fallback for unrecognized session_type
-            sanitized_data["parent_id"] = None
-            current_session_id = sessions_table.insert(sanitized_data)
+            session_data["parent_id"] = None
+            current_session_id = sessions_table.insert(session_data)
             last_session_id = current_session_id
 
         # handle speakers
         if current_session_id and speakers:
             speaker_list = [s.strip() for s in speakers.replace(";", ",").split(",") if s.strip()]
             for speaker_name in speaker_list:
-                sanitized_name = speaker_name.replace("'", "''")
-                existing_speaker = speakers_table.select(["id"], {"name": sanitized_name})
+                existing_speaker = speakers_table.select(["id"], {"name": speaker_name})
                 if existing_speaker:
                     speaker_id = existing_speaker[0]["id"]
                 else:
-                    speaker_id = speakers_table.insert({"name": sanitized_name})
+                    speaker_id = speakers_table.insert({"name": speaker_name})
                 session_speakers_table.insert({"session_id": current_session_id, "speaker_id": speaker_id})
 
     sessions_table.close()
